@@ -1,9 +1,935 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>financeaitracking</title>
+  <title>Predict.jsx</title>
 </head>
 <body>
-  <h1>financeaitracking</h1>
+  <pre>
+    <code>
+      import { useState, useEffect, useRef } from "react";
+import axios from "axios";
+import {
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from "recharts";
+import "bootstrap/dist/css/bootstrap.min.css";
+import { jsPDF } from "jspdf";
+import html2canvas from "html2canvas";
+import "./predict.css";
+
+const COLORS = ["#67b99dff", "#814848ff", "rgba(73, 73, 133, 1)"];
+
+// Axios instance
+const api = axios.create({
+  baseURL: "http://localhost:5000/api",
+});
+
+function Predict() {
+  const [view, setView] = useState("day");
+  const [isDark, setIsDark] = useState(false);
+  const [date, setDate] = useState("");
+  const [income, setIncome] = useState("");
+  const [expense, setExpense] = useState("");
+  const [records, setRecords] = useState([]);
+  const [filterDate, setFilterDate] = useState("");
+  const [currency, setCurrency] = useState("INR");
+  const [chatQuery, setChatQuery] = useState("");
+  const [chatReply, setChatReply] = useState("");
+  const [chatOpen, setChatOpen] = useState(false);
+  const [loadingChat, setLoadingChat] = useState(false);
+  const tableRef = useRef();
+
+  // Loan section state
+  const [loans, setLoans] = useState([]);
+  const [loanPerson, setLoanPerson] = useState("");
+  const [loanAmount, setLoanAmount] = useState("");
+  const [loanMonthlyRate, setLoanMonthlyRate] = useState("");
+  const [loanMonths, setLoanMonths] = useState("");
+  const [predictedPayer, setPredictedPayer] = useState("");
+  const [recordSort, setRecordSort] = useState({ by: "date", order: "asc" });
+  const [loanSort, setLoanSort] = useState({ by: "person", order: "asc" });
+  const [toast, setToast] = useState({ show: false, message: "" });
+  const [filterOpen, setFilterOpen] = useState(true);
+
+  // Fetch all records on mount
+  useEffect(() => {
+    fetchRecords();
+  }, []);
+
+  const fetchRecords = async () => {
+    try {
+      const res = await api.get("/records");
+      setRecords(res.data);
+    } catch (err) {
+      console.error("❌ Error fetching records:", err.message);
+    }
+  };
+
+  useEffect(() => {
+    if (view === "day" && !filterDate) {
+      setFilterDate(new Date().toISOString().split("T")[0]);
+    }
+  }, [view, filterDate]);
+
+  // Apply theme class to full body
+  useEffect(() => {
+    const add = isDark ? "theme-dark" : "theme-light";
+    const remove = isDark ? "theme-light" : "theme-dark";
+    document.body.classList.add(add);
+    document.body.classList.remove(remove);
+    return () => {
+      document.body.classList.remove(add);
+    };
+  }, [isDark]);
+
+  const sumValues = (str) =>
+    str
+      .split("+")
+      .map((s) => Number(s.trim()) || 0)
+      .reduce((a, b) => a + b, 0);
+
+  const handleAdd = async () => {
+    if (!income || !expense || !date) {
+      alert("⚠️ Enter income, expense, and date!");
+      return;
+    }
+
+    const totalIncome = sumValues(income);
+    const totalExpense = sumValues(expense);
+
+    try {
+      const res = await api.post("/records", {
+        date,
+        income: totalIncome,
+        expense: totalExpense,
+      });
+
+      setRecords((prev) => {
+        const exists = prev.find((r) => r.date === date);
+        if (exists) {
+          return prev.map((r) => (r.date === date ? res.data : r));
+        } else {
+          return [...prev, res.data];
+        }
+      });
+
+      setIncome("");
+      setExpense("");
+      setDate("");
+    } catch (err) {
+      console.error("❌ Error adding record:", err.message);
+      alert("Error adding record");
+    }
+  };
+
+  const handleChatSearch = async () => {
+    if (!chatQuery || loadingChat) return;
+    setLoadingChat(true);
+    setChatReply("");
+
+    try {
+      const res = await api.post("/chatbot", { query: chatQuery });
+      setChatReply(res.data.reply || "No reply received.");
+    } catch (err) {
+      console.error("❌ Chatbot error:", err);
+      const reply =
+        err?.response?.data?.reply ||
+        err?.response?.data?.error ||
+        (err.message.includes("Network")
+          ? "Cannot reach server. Ensure the backend is running on http://localhost:5000."
+          : "Unable to process your request.");
+      setChatReply(reply);
+    } finally {
+      setLoadingChat(false);
+    }
+  };
+
+  // Grouping logic
+  const groupTotals = (period) => {
+    let filtered = records;
+    if (period === "day" && filterDate)
+      filtered = records.filter((r) => r.date === filterDate);
+    else if (period === "week" && filterDate) {
+      const d = new Date(filterDate);
+      const startOfWeek = new Date(d.setDate(d.getDate() - d.getDay()));
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 6);
+      filtered = records.filter((r) => {
+        const rd = new Date(r.date);
+        return rd >= startOfWeek && rd <= endOfWeek;
+      });
+    } else if (period === "month" && filterDate) {
+      const [year, month] = filterDate.split("-");
+      filtered = records.filter(
+        (r) =>
+          new Date(r.date).getFullYear() === Number(year) &&
+          new Date(r.date).getMonth() + 1 === Number(month)
+      );
+    } else if (period === "year" && filterDate) {
+      filtered = records.filter(
+        (r) => new Date(r.date).getFullYear() === Number(filterDate)
+      );
+    }
+
+    const groups = {};
+    filtered.forEach((r) => {
+      const d = new Date(r.date);
+      let key = "";
+      if (period === "day") key = r.date;
+      else if (period === "week")
+        key = `Week of ${new Date(
+          d.setDate(d.getDate() - d.getDay())
+        ).toISOString().split("T")[0]}`;
+      else if (period === "month") key = `${d.getFullYear()}-${d.getMonth() + 1}`;
+      else if (period === "year") key = `${d.getFullYear()}`;
+      else if (period === "all") key = "All Records";
+      if (!groups[key]) groups[key] = { income: 0, expense: 0 };
+      groups[key].income += r.income;
+      groups[key].expense += r.expense;
+    });
+    return groups;
+  };
+
+  const chartData = () => {
+    if (!filterDate) return [];
+    let incomeSum = 0;
+    let expenseSum = 0;
+
+    if (view === "day") {
+      const record = records.find((r) => r.date === filterDate);
+      if (record) {
+        incomeSum = record.income;
+        expenseSum = record.expense;
+      }
+    } else if (view === "week") {
+      const d = new Date(filterDate);
+      const startOfWeek = new Date(d.setDate(d.getDate() - d.getDay()));
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 6);
+      records.forEach((r) => {
+        const rd = new Date(r.date);
+        if (rd >= startOfWeek && rd <= endOfWeek) {
+          incomeSum += r.income;
+          expenseSum += r.expense;
+        }
+      });
+    } else if (view === "month") {
+      const [year, month] = filterDate.split("-");
+      records.forEach((r) => {
+        const rd = new Date(r.date);
+        if (rd.getFullYear() === Number(year) && rd.getMonth() + 1 === Number(month)) {
+          incomeSum += r.income;
+          expenseSum += r.expense;
+        }
+      });
+    } else if (view === "year") {
+      const year = Number(filterDate);
+      records.forEach((r) => {
+        const rd = new Date(r.date);
+        if (rd.getFullYear() === year) {
+          incomeSum += r.income;
+          expenseSum += r.expense;
+        }
+      });
+    }
+
+    return [
+      { name: "Income", value: incomeSum },
+      { name: "Expense", value: expenseSum },
+    ];
+  };
+
+  const totals = groupTotals(view);
+  const uniqueYears = [...new Set(records.map((r) => new Date(r.date).getFullYear()))].sort(
+    (a, b) => b - a
+  );
+
+  // --- PDF & Share ---
+  const handleDownloadPDF = async () => {
+    try {
+      const element = tableRef.current;
+      const canvas = await html2canvas(element);
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF("p", "pt", "a4");
+      const imgProps = pdf.getImageProperties(imgData);
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+      pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight);
+      pdf.save("finance-report.pdf");
+    } catch (err) {
+      console.error("❌ PDF error:", err);
+    }
+  };
+
+  const handleShareWhatsApp = async () => {
+    try {
+      const element = tableRef.current;
+      const canvas = await html2canvas(element);
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF("p", "pt", "a4");
+      const imgProps = pdf.getImageProperties(imgData);
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+      pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight);
+      const pdfBlob = pdf.output("blob");
+      const pdfFile = new File([pdfBlob], "finance-report.pdf", { type: "application/pdf" });
+
+      if (navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
+        await navigator.share({
+          files: [pdfFile],
+          title: "Finance Report",
+          text: "Here’s my finance report 📊",
+        });
+      } else {
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(pdfBlob);
+        link.download = "finance-report.pdf";
+        link.click();
+        alert("Your browser does not support WhatsApp PDF share. PDF downloaded instead.");
+      }
+    } catch (err) {
+      console.error("❌ Share error:", err);
+      alert("Error sharing PDF. Try downloading instead.");
+    }
+  };
+
+  // --- Loan Section Functions ---
+  const toggleLoanPaid = (idx) => {
+    setLoans((prev) => prev.map((l, i) => (i === idx ? { ...l, paid: !l.paid } : l)));
+  };
+
+  const deleteLoan = (idx) => {
+    setLoans((prev) => prev.filter((_, i) => i !== idx));
+    setToast({ show: true, message: "Loan deleted" });
+    setTimeout(() => setToast({ show: false, message: "" }), 2000);
+  };
+  const handleAddLoan = () => {
+    if (!loanPerson || !loanAmount) {
+      alert("Enter borrower and loan amount");
+      return;
+    }
+    const rate = Number(loanMonthlyRate);
+    const months = Number(loanMonths);
+    if ((loanMonthlyRate && isNaN(rate)) || (loanMonths && isNaN(months))) {
+      alert("Invalid interest rate or months");
+      return;
+    }
+    setLoans([
+      ...loans,
+      {
+        person: loanPerson,
+        amount: Number(loanAmount),
+        monthlyRate: isNaN(rate) ? 0 : rate, // percentage per month
+        months: isNaN(months) ? 0 : months,
+        paid: false,
+      },
+    ]);
+    setLoanPerson("");
+    setLoanAmount("");
+    setLoanMonthlyRate("");
+    setLoanMonths("");
+  };
+
+  const handlePredictRepayment = () => {
+    if (loans.length === 0) {
+      setPredictedPayer("No loans yet");
+      return;
+    }
+    const unpaidLoans = loans.filter((l) => !l.paid);
+    if (unpaidLoans.length === 0) {
+      setPredictedPayer("All loans paid");
+      return;
+    }
+    const minLoan = unpaidLoans.reduce((prev, curr) => (curr.amount < prev.amount ? curr : prev));
+    setPredictedPayer(minLoan.person);
+  };
+
+  const calculateCompoundTotal = (principal, monthlyRatePct, months) => {
+    const rate = (Number(monthlyRatePct) || 0) / 100;
+    const n = Number(months) || 0;
+    if (principal <= 0 || rate === 0 || n === 0) return { interest: 0, total: principal };
+    const total = principal * Math.pow(1 + rate, n);
+    return { interest: total - principal, total };
+  };
+
+  const loansWithInterest = loans.map((l) => {
+    const { interest, total } = calculateCompoundTotal(l.amount, l.monthlyRate || 0, l.months || 0);
+    return { ...l, interest, totalDue: total };
+  });
+
+  const unpaidLoansWithInterest = loansWithInterest.filter((l) => !l.paid);
+  const totalLoanPrincipal = unpaidLoansWithInterest.reduce((acc, l) => acc + l.amount, 0);
+  const totalLoanInterest = unpaidLoansWithInterest.reduce((acc, l) => acc + l.interest, 0);
+
+  const totalProfit =
+    records.reduce((acc, r) => acc + r.income - r.expense, 0) -
+    (totalLoanPrincipal + totalLoanInterest);
+
+  // --- KPI and Progress helpers ---
+  const getCurrentSums = () => {
+    if (!filterDate && view !== "all") return { income: 0, expense: 0 };
+    let incomeSum = 0;
+    let expenseSum = 0;
+    if (view === "day") {
+      const record = records.find((r) => r.date === filterDate);
+      if (record) {
+        incomeSum = record.income;
+        expenseSum = record.expense;
+      }
+    } else if (view === "week") {
+      const d = new Date(filterDate);
+      const startOfWeek = new Date(d.setDate(d.getDate() - d.getDay()));
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 6);
+      records.forEach((r) => {
+        const rd = new Date(r.date);
+        if (rd >= startOfWeek && rd <= endOfWeek) {
+          incomeSum += r.income;
+          expenseSum += r.expense;
+        }
+      });
+    } else if (view === "month") {
+      const [year, month] = String(filterDate || "").split("-");
+      records.forEach((r) => {
+        const rd = new Date(r.date);
+        if (rd.getFullYear() === Number(year) && rd.getMonth() + 1 === Number(month)) {
+          incomeSum += r.income;
+          expenseSum += r.expense;
+        }
+      });
+    } else if (view === "year") {
+      const year = Number(filterDate);
+      records.forEach((r) => {
+        const rd = new Date(r.date);
+        if (rd.getFullYear() === year) {
+          incomeSum += r.income;
+          expenseSum += r.expense;
+        }
+      });
+    } else if (view === "all" || view === "records") {
+      records.forEach((r) => {
+        incomeSum += r.income;
+        expenseSum += r.expense;
+      });
+    }
+    return { income: incomeSum, expense: expenseSum };
+  };
+
+  const { income: kpiIncome, expense: kpiExpense } = getCurrentSums();
+  const kpiSavings = kpiIncome - kpiExpense;
+  const savingsPct = kpiIncome > 0 ? Math.max(0, Math.min(100, (kpiSavings / kpiIncome) * 100)) : 0;
+
+  // Form live preview for loan inputs
+  const formPreview = calculateCompoundTotal(Number(loanAmount) || 0, Number(loanMonthlyRate) || 0, Number(loanMonths) || 0);
+
+  // --- Formatters ---
+  const formatCurrency = (num) => {
+    const n = Number(num) || 0;
+    try {
+      return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(n);
+    } catch {
+      return n.toFixed(2);
+    }
+  };
+
+  // --- Sorting helpers ---
+  const toggleSort = (current, by) => {
+    if (current.by === by) {
+      return { by, order: current.order === "asc" ? "desc" : "asc" };
+    }
+    return { by, order: "asc" };
+  };
+
+  const sortedLoans = [...loansWithInterest].sort((a, b) => {
+    const { by, order } = loanSort;
+    const dir = order === "asc" ? 1 : -1;
+    const av = a[by] ?? 0;
+    const bv = b[by] ?? 0;
+    if (typeof av === "string") return av.localeCompare(bv) * dir;
+    return (av - bv) * dir;
+  });
+
+  const recordRows = (view === "records"
+    ? [...records]
+    : Object.entries(totals).map(([key, val]) => ({ date: key, ...val }))
+  );
+
+  const sortedRecordRows = [...recordRows].sort((a, b) => {
+    const { by, order } = recordSort;
+    const dir = order === "asc" ? 1 : -1;
+    if (by === "date") return String(a.date).localeCompare(String(b.date)) * dir;
+    return ((a[by] ?? 0) - (b[by] ?? 0)) * dir;
+  });
+
+  return (
+    <div className={`container-fluid text-center py-4 ${isDark ? "theme-dark" : "theme-light"}`}>
+      <button
+        className="mode-toggle-fixed"
+        onClick={() => setIsDark((d) => !d)}
+        aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+        title={isDark ? "Light mode" : "Dark mode"}
+      >
+        {isDark ? "☀️" : "🌙"}
+      </button>
+      <div className="position-sticky top-0 z-3 py-2 mb-2 header-bar">
+        <div className="position-relative w-75 mx-auto">
+          <h2 className="title text-center text-primary">Personal Finance Dashboard</h2>
+        </div>
+      </div>
+      <br />
+
+      {/* Add Record */}
+<br></br>
+ <div className="row g-3 w-75 mx-auto">
+        <div className="col-12 col-md-4">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                  <center>
+                  <label>&emsp;&emsp;&emsp;&emsp;Date&emsp;&emsp;</label>
+<input
+        id="dateInput"
+        type="date"
+        value={date}
+        onChange={(e) => setDate(e.target.value)}
+        className="formcontrol"
+      />             </center>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="col-12 col-md-4">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                  <center></center>
+                   <label>&emsp;&emsp;Income&emsp;</label>
+          <input placeholder="INCOME (100+200)" value={income} onChange={(e) => setIncome(e.target.value)} className="formcontrol" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="col-12 col-md-4">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                 <label>&emsp;&emsp;Expense&emsp;</label>
+          <input placeholder="EXPENSE (50+30)" value={expense} onChange={(e) => setExpense(e.target.value)} className="formcontrol" />
+                </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <center>
+                  <button className="btn align-self-end" onClick={handleAdd}>Add Record</button>
+</center>
+        </div>
+      {/* Interactive Filters Panel */}
+      <div className="max-w-75">
+        <div className="filter-card card border-0 shadow-sm text-start">
+          <div className="card-body">
+            <div className="d-flex justify-content-between align-items-center mb-3">
+              <div className="d-flex align-items-center gap-2">
+                <span className="filter-icon">🔍</span>
+                <strong>Smart Filters</strong>
+                <span className="badge bg-primary">{view.toUpperCase()}</span>
+              </div>
+              <button className="btn btn-sm filter-toggle" onClick={() => setFilterOpen((o) => !o)}>
+                {filterOpen ? "🔼 Hide" : "🔽 Show"} Filters
+              </button>
+            </div>
+            {filterOpen && (
+              <div className="filter-content">
+                <div className="filter-section">
+                  <h6 className="filter-label">📅 Time Period</h6>
+                  <div className="chip-container">
+                    {["day", "week", "month", "year", "all", "records"].map((period) => (
+                      <button 
+                        key={period}
+                        className={`chip ${view === period ? 'chip-active' : ''}`} 
+                        onClick={() => setView(period)}
+                      >
+                        {period === "all" ? "📊 Overall" : 
+                         period === "records" ? "📋 All Records" :
+                         period === "day" ? "📅 Day" :
+                         period === "week" ? "📆 Week" :
+                         period === "month" ? "📆 Month" :
+                         "📆 Year"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                
+                <div className="filter-section">
+                  <h6 className="filter-label">💰 Currency</h6>
+                  <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="formcontrol p-2 rounded-3">
+                    <option value="INR">🇮🇳 INR ₹</option>
+                    <option value="USD">🇺🇸 USD $</option>
+                    <option value="EUR">🇪🇺 EUR €</option>
+                    <option value="GBP">🇬🇧 GBP £</option>
+                  </select>
+                </div>
+
+                {(view === "day" || view === "week") && (
+                  <div className="filter-section">
+                    <h6 className="filter-label">📅 Select Date</h6>
+                    <input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="formcontrol" />
+                  </div>
+                )}
+                {view === "month" && (
+                  <div className="filter-section">
+                    <h6 className="filter-label">📆 Select Month</h6>
+                    <input type="month" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="formcontrol" />
+                  </div>
+                )}
+                {view === "year" && (
+                  <div className="filter-section">
+                    <h6 className="filter-label">📆 Select Year</h6>
+                    <select value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="formcontrol">
+                      <option value="">-- SELECT YEAR --</option>
+                      {uniqueYears.map((y) => <option key={y} value={y}>{y}</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+<br></br>
+      {/* KPI Cards */}
+      <div className="row g-3 w-75 mx-auto">
+        <div className="col-12 col-md-4">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                  <div className="text-success">Income</div>
+                  <div className="fs-4 fw-bold text-success">{formatCurrency(kpiIncome)}</div>
+                </div>
+                <span>💰</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="col-12 col-md-4">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                  <div className="text-danger">Expense</div>
+                  <div className="fs-4 fw-bold text-danger">{formatCurrency(kpiExpense)}</div>
+                </div>
+                <span>🧾</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="col-12 col-md-4">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                  <div className="text-primary">Savings</div>
+                  <div className={`fs-4 fw-bold ${kpiSavings >= 0 ? "text-primary" : "text-warning"}`}>{formatCurrency(kpiSavings)}</div>
+                </div>
+                <span>📈</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+<br></br>
+      {/* Records Table */}
+      <p className="title text-primary">Record</p>
+      <div ref={tableRef} className="responsive-wrap max-w-75">
+        <table className="table table-bordered mt-3">
+          <thead>
+            <tr>
+              <th role="button" onClick={() => setRecordSort((s) => toggleSort(s, "date"))}>Date</th>
+              <th role="button" onClick={() => setRecordSort((s) => toggleSort(s, "income"))}>Income</th>
+              <th role="button" onClick={() => setRecordSort((s) => toggleSort(s, "expense"))}>Expense</th>
+              <th role="button" onClick={() => setRecordSort((s) => toggleSort(s, "balance"))}>Balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedRecordRows.length === 0 ? (
+              <tr>
+                <td colSpan="4" className="text-center text-muted">No records yet. Add your first record above.</td>
+              </tr>
+            ) : (
+              sortedRecordRows
+                .map((r, i) => {
+                  const balance = (r.income - r.expense);
+                  return (
+                  <tr key={i}>
+                    <td>{r.date}</td>
+                    <td>{formatCurrency(r.income)}</td>
+                    <td>{formatCurrency(r.expense)}</td>
+                    <td>{formatCurrency(balance)}</td>
+                  </tr>
+                );})
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Buttons */}
+      <div className="d-flex justify-content-center gap-4 my-3">
+        <button className="btn" onClick={handleDownloadPDF}>Download PDF</button>
+        <button className="btn" onClick={handleShareWhatsApp}>Share via WhatsApp</button>
+      </div>
+<br></br><br></br>
+      {/* PieChart */}
+      {filterDate && chartData().length > 0 && (
+        <div className="chart-responsive">
+          <ResponsiveContainer>
+            <PieChart>
+              <Pie data={chartData()} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={70} outerRadius={120} label>
+                {chartData().map((entry, index) => <Cell key={index} fill={COLORS[index % COLORS.length]} />)}
+              </Pie>
+              <Tooltip />
+              <Legend />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+       {/* --- Loan & Profit Section --- */}
+       <div className="loan-section mt-5 p-3 mx-auto">
+        <h4 className="title text-center text-primary">Loan & Profit Tracker</h4>
+        
+
+<div className="row g-3 w-75 mx-auto">
+        <div className="col-12 col-md-3">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                  <label>Borrower</label>
+            <input type="text" placeholder="PERSON'S NAME" value={loanPerson} onChange={(e) => setLoanPerson(e.target.value)} className="formcontrol" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="col-12 col-md-3">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                   <label>Loan Amount</label>
+            <input type="number" placeholder="LOAN AMOUNT" value={loanAmount} onChange={(e) => setLoanAmount(e.target.value)} className="formcontrol" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+         <div className="col-12 col-md-3">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                  <label>Monthly Interest %: <strong>{loanMonthlyRate || 0}%</strong></label>
+            <input type="range" min="0" max="20" step="0.1" value={loanMonthlyRate || 0} onChange={(e) => setLoanMonthlyRate(e.target.value)} className="form-range" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="col-12 col-md-3">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                 <label>&emsp;&emsp;Months:&emsp; <strong>{loanMonths || 0}</strong></label>
+            <input type="range" min="0" max="60" step="1" value={loanMonths || 0} onChange={(e) => setLoanMonths(e.target.value)} className="form-range" />
+                </div>
+                </div>
+              </div>
+            </div>
+          </div>
+                  <center><button className="btn align-self-end" onClick={handleAddLoan}>Add Loan</button></center>
+
+        </div>
+          <br />
+          <div className="row g-3 w-75 mx-auto">
+        <div className="col-12 col-md-6">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                  <center>
+                  <span><strong>Preview Interest:</strong> {formPreview.interest.toFixed(2)}</span>
+                </center>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="col-12 col-md-6">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                <center>
+            <span><strong>Preview Total:</strong> {(formPreview.total).toFixed(2)}</span>
+                </center>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        </div>
+
+        <table className="table table-bordered mt-3">
+          <thead>
+            <tr>
+              
+              <th role="button" onClick={() => setLoanSort((s) => toggleSort(s, "person"))}>Borrower</th>
+              <th role="button" onClick={() => setLoanSort((s) => toggleSort(s, "amount"))}>Loan Amount</th>
+              <th role="button" onClick={() => setLoanSort((s) => toggleSort(s, "monthlyRate"))}>Monthly %</th>
+              <th role="button" onClick={() => setLoanSort((s) => toggleSort(s, "months"))}>Months</th>
+              <th role="button" onClick={() => setLoanSort((s) => toggleSort(s, "interest"))}>Interest</th>
+              <th role="button" onClick={() => setLoanSort((s) => toggleSort(s, "totalDue"))}>Total Due</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedLoans.length === 0 ? (
+              <tr>
+                <td colSpan="8" className="text-center text-muted">No loans added yet. Use the form above to add one.</td>
+              </tr>
+            ) : (
+              sortedLoans.map((l, idx) => (
+                <tr key={idx}>
+                  <td>{l.person}</td>
+                  <td>{formatCurrency(l.amount)}</td>
+                  <td>{l.monthlyRate || 0}</td>
+                  <td>{l.months || 0}</td>
+                  <td>{formatCurrency(l.interest || 0)}</td>
+                  <td>{formatCurrency(l.totalDue || l.amount)}</td>
+                  <td>
+                    <div className="form-check d-flex align-items-center justify-content-center gap-1">
+                      <input className="form-check-input" type="checkbox" checked={!!l.paid} onChange={() => toggleLoanPaid(idx)} id={`paid-${idx}`} />
+                      <label className="form-check-label" htmlFor={`paid-${idx}`}>{l.paid ? "Paid" : "Pending"}</label>
+                    </div>
+                  </td>
+                  <td>
+                    <button className="btn btn-sm" onClick={() => deleteLoan(idx)}>Delete</button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+
+
+<div className="row g-3 w-75 mx-auto">
+        <div className="col-12 col-md-4">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                          <p className="mb-1"><strong>Total Loan Principal:</strong> {formatCurrency(totalLoanPrincipal)}</p>
+                </div>
+                <span>💰</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="col-12 col-md-4">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                           <p className="mb-1"><strong>Total Loan Interest:</strong> {formatCurrency(totalLoanInterest)}</p>
+                </div>
+                <span>🧾</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="col-12 col-md-4">
+          <div className="card shadow-sm border-0">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                           <h5>Total Profit: {formatCurrency(totalProfit)}</h5>
+                </div>
+                <span>📈</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="mt-3 text-center">
+          <button className="btn btn-warning" onClick={handlePredictRepayment}>
+            Predict Who Will Pay Loan
+          </button>
+          {predictedPayer && (
+            <p className="mt-2 text-success">
+              Likely to pay first: <strong>{predictedPayer}</strong>
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Chatbot */}
+      <div style={{ position: "fixed", bottom: "20px", right: "20px" }}>
+        {chatOpen ? (
+          <div className="card p-2 shadow rounded-3" style={{ width: "320px", background: "#f9fafb" }}>
+            <div className="d-flex justify-content-between align-items-center mb-2 border-bottom pb-1">
+              <strong className="text-primary">CHAT BOT</strong>
+              <button onClick={() => setChatOpen(false)} className="closebutton">X</button>
+            </div>
+            <input
+              type="text"
+              placeholder='TRY: "2025-09-17", "2025-09", "2025", "WEEK 2025-09-17"'
+              value={chatQuery}
+              onChange={(e) => setChatQuery(e.target.value)}
+              className="form-control mb-2 rounded-2"
+            />
+            <button
+              className="btn btn-success w-100 mb-2 rounded-2"
+              onClick={handleChatSearch}
+              disabled={loadingChat}
+            >
+              {loadingChat ? "Predicting..." : "Predict"}
+            </button>
+            {chatReply && (
+              <div className="alert alert-info p-2 text-start rounded-2" style={{ maxHeight: "150px", overflowY: "auto", fontSize: "14px" }}>
+                {chatReply}
+              </div>
+            )}
+          </div>
+        ) : (
+          <button className="chatbutton rounded-circle p-2 shadow animate-bounce" onClick={() => setChatOpen(true)}>💬</button>
+        )}
+      </div>
+
+      {/* Toast */}
+      {toast.show && (
+        <div className="position-fixed bottom-0 start-50 translate-middle-x mb-3">
+          <div className="alert alert-success shadow py-2 px-3 rounded-3">{toast.message}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default Predict;
+    </code>
+  </pre>
 </body>
 </html>
